@@ -27,6 +27,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import sys
 import uuid
 from contextlib import asynccontextmanager
@@ -45,7 +46,12 @@ from src.models.github_events import (
     GitHubIssueCommentEvent,
     GitHubIssuesEvent,
     GitHubPingEvent,
+    GitHubPullRequestReviewCommentEvent,
+    GitHubPullRequestReviewEvent,
     IssueAction,
+    PRReviewAction,
+    PRReviewCommentAction,
+    PRReviewState,
     parse_webhook_payload,
 )
 from src.models.work_item import TaskType, WorkItem, WorkItemStatus
@@ -532,8 +538,14 @@ async def handle_github_webhook(
                 "correlation_id": correlation_id,
             }
 
-        # Map event to WorkItem
-        work_item = map_event_to_work_item(event)
+        # Map event to WorkItem - handle PR review events separately
+        work_item = None
+        if isinstance(
+            event, (GitHubPullRequestReviewEvent, GitHubPullRequestReviewCommentEvent)
+        ):
+            work_item = map_pr_review_event_to_work_item(event)
+        elif isinstance(event, (GitHubIssuesEvent, GitHubIssueCommentEvent)):
+            work_item = map_event_to_work_item(event)
 
         if work_item is None:
             logger.info(
@@ -635,6 +647,409 @@ def map_event_to_work_item(
         return _map_issue_comment_event_to_work_item(event)
 
     return None
+
+
+def map_pr_review_event_to_work_item(
+    event: GitHubPullRequestReviewEvent | GitHubPullRequestReviewCommentEvent,
+) -> WorkItem | None:
+    """
+    Map a GitHub PR review webhook event to a WorkItem for the execution queue.
+
+    This function handles pull_request_review and pull_request_review_comment
+    events for the autonomous bug correction loop.
+
+    Args:
+        event: The parsed GitHub PR review webhook event.
+
+    Returns:
+        A WorkItem if the event should be processed, None otherwise.
+
+    Filtering Logic:
+        - Reviews with CHANGES_REQUESTED state trigger re-queuing
+        - Review comments on open PRs trigger feedback processing
+        - Approved reviews may trigger workflow completion
+    """
+    # Determine if this event should trigger processing
+    if not should_process_pr_review_event(event):
+        return None
+
+    if isinstance(event, GitHubPullRequestReviewEvent):
+        return _map_pr_review_event_to_work_item(event)
+    elif isinstance(event, GitHubPullRequestReviewCommentEvent):
+        return _map_pr_review_comment_event_to_work_item(event)
+
+    return None
+
+
+def should_process_pr_review_event(
+    event: GitHubPullRequestReviewEvent | GitHubPullRequestReviewCommentEvent,
+) -> bool:
+    """
+    Determine if a PR review event should trigger processing.
+
+    Filtering criteria:
+    - Reviews with CHANGES_REQUESTED state trigger re-queuing
+    - Review comments (not on draft PRs) trigger feedback processing
+    - Dismissed reviews are ignored
+    - Approved reviews may signal completion
+
+    Args:
+        event: The parsed GitHub PR review webhook event.
+
+    Returns:
+        True if the event should be processed, False otherwise.
+    """
+    # Ignore events on draft PRs (optional, configurable)
+    if event.pull_request.draft:
+        logger.debug(
+            "Ignoring PR review event on draft PR",
+            extra={
+                "pr_number": event.pull_request.number,
+            },
+        )
+        return False
+
+    if isinstance(event, GitHubPullRequestReviewEvent):
+        # Process submitted reviews with changes requested
+        if (
+            event.action == PRReviewAction.SUBMITTED
+            and event.review.state == PRReviewState.CHANGES_REQUESTED
+        ):
+            return True
+        # Process approved reviews for completion tracking
+        if (
+            event.action == PRReviewAction.SUBMITTED
+            and event.review.state == PRReviewState.APPROVED
+        ):
+            return True
+        # Log but don't process dismissed or edited reviews
+        logger.debug(
+            f"Ignoring PR review action: {event.action.value}",
+            extra={
+                "pr_number": event.pull_request.number,
+                "review_state": event.review.state.value,
+            },
+        )
+        return False
+
+    if isinstance(event, GitHubPullRequestReviewCommentEvent):
+        # Process created review comments
+        if event.action == PRReviewCommentAction.CREATED:
+            return True
+        # Log but don't process edited or deleted comments
+        logger.debug(
+            f"Ignoring PR review comment action: {event.action.value}",
+            extra={
+                "pr_number": event.pull_request.number,
+            },
+        )
+        return False
+
+    return False
+
+
+def _map_pr_review_event_to_work_item(
+    event: GitHubPullRequestReviewEvent,
+) -> WorkItem:
+    """
+    Map a pull_request_review event to a WorkItem.
+
+    Args:
+        event: The GitHub pull_request_review event.
+
+    Returns:
+        A WorkItem ready for queue processing.
+    """
+    # Extract the associated issue number from PR body or title
+    # PRs are often linked to issues via "Fixes #123" or "Closes #456"
+    linked_issue_number = _extract_linked_issue_number(
+        event.pull_request.body,
+        event.pull_request.title,
+    )
+
+    # Build context body from review
+    context_body = _build_pr_review_context_body(
+        pr_title=event.pull_request.title,
+        pr_body=event.pull_request.body,
+        review_body=event.review.body,
+        review_state=event.review.state.value,
+        reviewer=event.review.user.login,
+        pr_number=event.pull_request.number,
+    )
+
+    # Build metadata
+    metadata = {
+        "action": event.action.value,
+        "event_type": "pull_request_review",
+        "pr_number": event.pull_request.number,
+        "pr_node_id": event.pull_request.node_id,
+        "pr_url": event.pull_request.html_url,
+        "review_id": event.review.id,
+        "review_node_id": event.review.node_id,
+        "review_state": event.review.state.value,
+        "reviewer": event.review.user.login,
+        "sender": event.sender.login,
+        "repository_node_id": event.repository.node_id,
+        "linked_issue_number": linked_issue_number,
+        "head_ref": event.pull_request.head.get("ref", ""),
+        "head_sha": event.pull_request.head.get("sha", ""),
+        "base_ref": event.pull_request.base.get("ref", ""),
+    }
+
+    # Determine the work item ID - use PR number if no linked issue
+    work_item_id = (
+        linked_issue_number if linked_issue_number else event.pull_request.number
+    )
+
+    return WorkItem(
+        id=work_item_id,
+        source_url=event.pull_request.html_url,
+        context_body=context_body,
+        target_repo_slug=event.repository.full_name,
+        task_type=TaskType.BUG,  # PR reviews typically indicate bug fixes needed
+        status=WorkItemStatus.QUEUED,
+        metadata=metadata,
+    )
+
+
+def _map_pr_review_comment_event_to_work_item(
+    event: GitHubPullRequestReviewCommentEvent,
+) -> WorkItem:
+    """
+    Map a pull_request_review_comment event to a WorkItem.
+
+    Args:
+        event: The GitHub pull_request_review_comment event.
+
+    Returns:
+        A WorkItem ready for queue processing.
+    """
+    # Extract the associated issue number from PR body or title
+    linked_issue_number = _extract_linked_issue_number(
+        event.pull_request.body,
+        event.pull_request.title,
+    )
+
+    # Build context body from review comment
+    context_body = _build_pr_review_comment_context_body(
+        pr_title=event.pull_request.title,
+        pr_body=event.pull_request.body,
+        comment_body=event.comment.body,
+        comment_path=event.comment.path,
+        comment_diff_hunk=event.comment.diff_hunk,
+        commenter=event.comment.user.login,
+        pr_number=event.pull_request.number,
+    )
+
+    # Build metadata
+    metadata = {
+        "action": event.action.value,
+        "event_type": "pull_request_review_comment",
+        "pr_number": event.pull_request.number,
+        "pr_node_id": event.pull_request.node_id,
+        "pr_url": event.pull_request.html_url,
+        "comment_id": event.comment.id,
+        "comment_node_id": event.comment.node_id,
+        "comment_path": event.comment.path,
+        "commenter": event.comment.user.login,
+        "sender": event.sender.login,
+        "repository_node_id": event.repository.node_id,
+        "linked_issue_number": linked_issue_number,
+        "head_ref": event.pull_request.head.get("ref", ""),
+        "head_sha": event.pull_request.head.get("sha", ""),
+        "base_ref": event.pull_request.base.get("ref", ""),
+        "commit_id": event.comment.commit_id,
+    }
+
+    # Determine the work item ID - use PR number if no linked issue
+    work_item_id = (
+        linked_issue_number if linked_issue_number else event.pull_request.number
+    )
+
+    return WorkItem(
+        id=work_item_id,
+        source_url=event.comment.html_url,
+        context_body=context_body,
+        target_repo_slug=event.repository.full_name,
+        task_type=TaskType.BUG,  # Review comments typically indicate bug fixes needed
+        status=WorkItemStatus.QUEUED,
+        metadata=metadata,
+    )
+
+
+def _extract_linked_issue_number(pr_body: str | None, pr_title: str) -> int | None:
+    """
+    Extract a linked issue number from PR body or title.
+
+    Looks for patterns like:
+    - "Fixes #123"
+    - "Closes #456"
+    - "Resolves #789"
+    - "#123" (standalone reference)
+
+    Args:
+        pr_body: The pull request body/description.
+        pr_title: The pull request title.
+
+    Returns:
+        The first linked issue number found, or None.
+    """
+    text = f"{pr_title}\n{pr_body or ''}"
+
+    # Pattern for "Fixes #123", "Closes #456", etc.
+    keyword_pattern = r"(?:fixes|closes|resolves|addresses|references)\s*#(\d+)"
+    match = re.search(keyword_pattern, text, re.IGNORECASE)
+    if match:
+        return int(match.group(1))
+
+    # Pattern for standalone "#123" references
+    standalone_pattern = r"#(\d+)"
+    match = re.search(standalone_pattern, text)
+    if match:
+        return int(match.group(1))
+
+    return None
+
+
+def _build_pr_review_context_body(
+    pr_title: str,
+    pr_body: str | None,
+    review_body: str | None,
+    review_state: str,
+    reviewer: str,
+    pr_number: int,
+) -> str:
+    """
+    Build a context body for PR review WorkItem.
+
+    Args:
+        pr_title: Pull request title.
+        pr_body: Pull request body.
+        review_body: Review comment body.
+        review_state: State of the review (approved, changes_requested, etc.).
+        reviewer: Username of the reviewer.
+        pr_number: Pull request number.
+
+    Returns:
+        A formatted context string for the WorkItem.
+    """
+    parts = [
+        f"# PR Review Feedback: {pr_title}",
+        "",
+        f"**PR Number:** #{pr_number}",
+        f"**Review State:** {review_state}",
+        f"**Reviewer:** @{reviewer}",
+        "",
+    ]
+
+    if pr_body:
+        parts.extend(
+            [
+                "## Pull Request Description",
+                pr_body,
+                "",
+            ]
+        )
+
+    if review_body:
+        parts.extend(
+            [
+                "## Review Feedback",
+                review_body,
+                "",
+            ]
+        )
+
+    if review_state == "changes_requested":
+        parts.extend(
+            [
+                "## Action Required",
+                "The reviewer has requested changes. Please address the feedback above and update the pull request.",
+                "",
+            ]
+        )
+
+    return "\n".join(parts)
+
+
+def _build_pr_review_comment_context_body(
+    pr_title: str,
+    pr_body: str | None,
+    comment_body: str | None,
+    comment_path: str | None,
+    comment_diff_hunk: str | None,
+    commenter: str,
+    pr_number: int,
+) -> str:
+    """
+    Build a context body for PR review comment WorkItem.
+
+    Args:
+        pr_title: Pull request title.
+        pr_body: Pull request body.
+        comment_body: Review comment body.
+        comment_path: File path the comment is on.
+        comment_diff_hunk: The diff hunk being commented on.
+        commenter: Username of the commenter.
+        pr_number: Pull request number.
+
+    Returns:
+        A formatted context string for the WorkItem.
+    """
+    parts = [
+        f"# PR Review Comment: {pr_title}",
+        "",
+        f"**PR Number:** #{pr_number}",
+        f"**Commenter:** @{commenter}",
+        "",
+    ]
+
+    if comment_path:
+        parts.extend(
+            [
+                f"**File:** `{comment_path}`",
+                "",
+            ]
+        )
+
+    if pr_body:
+        parts.extend(
+            [
+                "## Pull Request Description",
+                pr_body,
+                "",
+            ]
+        )
+
+    if comment_diff_hunk:
+        parts.extend(
+            [
+                "## Code Context",
+                "```diff",
+                comment_diff_hunk,
+                "```",
+                "",
+            ]
+        )
+
+    if comment_body:
+        parts.extend(
+            [
+                "## Comment",
+                comment_body,
+                "",
+            ]
+        )
+
+    parts.extend(
+        [
+            "## Action Required",
+            "Please address the review comment above and update the pull request.",
+            "",
+        ]
+    )
+
+    return "\n".join(parts)
 
 
 def should_process_event(
