@@ -2,6 +2,7 @@
 Sentinel Orchestrator Main Module.
 
 Story 1: ID Generation & Initialization (Epic 1.5)
+Story 2: Log Integration (Epic 1.5)
 
 This module provides the main Sentinel orchestrator class that coordinates
 all Sentinel operations, including unique instance identification.
@@ -10,6 +11,7 @@ The Sentinel orchestrator:
 - Initializes with a unique SENTINEL_ID on startup
 - Stores SENTINEL_ID in instance state
 - Logs the SENTINEL_ID at startup for operational visibility
+- Configures structured logging with sentinel_id in all messages
 - Coordinates status feedback, heartbeat, and locking operations
 
 Usage:
@@ -30,6 +32,11 @@ from src.sentinel.config import (
 )
 from src.sentinel.heartbeat import HeartbeatLoop, get_heartbeat_interval
 from src.sentinel.label_manager import LabelManager
+from src.sentinel.logging_config import (
+    SentinelLogFilter,
+    configure_sentinel_logging,
+    get_sentinel_logger,
+)
 from src.sentinel.locking import LockAcquisitionError, LockManager
 from src.sentinel.status_feedback import ErrorPhase, StatusFeedbackManager
 
@@ -71,6 +78,8 @@ class Sentinel:
         bot_login: str | None = None,
         sentinel_id: str | None = None,
         config: SentinelConfig | None = None,
+        configure_logging: bool = True,
+        json_logging: bool = False,
     ):
         """
         Initialize the Sentinel orchestrator.
@@ -81,6 +90,8 @@ class Sentinel:
             bot_login: The bot account's GitHub login.
             sentinel_id: Optional Sentinel ID. If not provided, gets/creates one.
             config: Optional pre-configured SentinelConfig. Overrides other params.
+            configure_logging: Whether to configure structured logging (default: True).
+            json_logging: Whether to use JSON-structured log output (default: False).
         """
         # Initialize configuration with unique ID
         if config:
@@ -93,6 +104,17 @@ class Sentinel:
 
         self.repo = repo
         self.issue = issue
+
+        # Story 2: Configure structured logging with sentinel_id
+        self._json_logging = json_logging
+        if configure_logging:
+            configure_sentinel_logging(
+                sentinel_id=self._config.sentinel_id,
+                json_output=json_logging,
+            )
+
+        # Get a logger with sentinel_id filter applied
+        self._logger = get_sentinel_logger(__name__, self._config.sentinel_id)
 
         # Initialize managers
         self._status_feedback = StatusFeedbackManager(
@@ -132,13 +154,18 @@ class Sentinel:
         Log the Sentinel startup with ID for operational visibility.
 
         Story 1.3: Log the SENTINEL_ID at startup.
+        Story 2.2: Ensure all log messages include the SENTINEL_ID.
         """
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        logger.info(
+        self._logger.info(
             f"Sentinel initialized - ID: {self.sentinel_id} "
             f"(short: {self.sentinel_id_short}), "
             f"bot: {self._config.bot_login or 'not configured'}, "
-            f"time: {timestamp}"
+            f"time: {timestamp}",
+            extra={
+                "sentinel_event": "startup",
+                "bot_login": self._config.bot_login,
+            },
         )
 
     # =========================================================================
@@ -159,8 +186,9 @@ class Sentinel:
 
         self._start_time = time.time()
         result = self._status_feedback.claim_task()
-        logger.info(
-            f"Task claimed on issue #{self.issue.number} by Sentinel {self.sentinel_id_short}"
+        self._logger.info(
+            f"Task claimed on issue #{self.issue.number} by Sentinel {self.sentinel_id_short}",
+            extra={"sentinel_event": "task_claimed", "issue_number": self.issue.number},
         )
         return result
 
@@ -238,9 +266,16 @@ class Sentinel:
             logs: Optional log lines to include.
         """
         self._status_feedback.report_error(error, phase, logs)
-        logger.error(
+        self._logger.error(
             f"Error reported by Sentinel {self.sentinel_id_short}: "
-            f"phase={phase}, error={error}"
+            f"phase={phase}, error={error}",
+            extra={
+                "sentinel_event": "error_reported",
+                "phase": str(phase),
+                "error_type": type(error).__name__
+                if isinstance(error, Exception)
+                else "str",
+            },
         )
 
     def report_success(self, summary: str | None = None) -> None:
@@ -251,9 +286,13 @@ class Sentinel:
             summary: Optional summary of what was accomplished.
         """
         self._status_feedback.report_success(summary)
-        logger.info(
+        self._logger.info(
             f"Success reported by Sentinel {self.sentinel_id_short} "
-            f"on issue #{self.issue.number}"
+            f"on issue #{self.issue.number}",
+            extra={
+                "sentinel_event": "success_reported",
+                "issue_number": self.issue.number,
+            },
         )
 
     # =========================================================================
