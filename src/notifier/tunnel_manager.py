@@ -85,6 +85,7 @@ class TunnelManager(ABC):
         """
         pass
 
+    @abstractmethod
     def get_webhook_url(self, path: str = "/webhooks/github") -> str:
         """
         Get the full webhook URL for a given path.
@@ -95,9 +96,7 @@ class TunnelManager(ABC):
         Returns:
             The complete webhook URL.
         """
-        # This is a sync method that should be called after get_public_url
-        # Subclasses can override if they need async behavior
-        raise NotImplementedError("Subclasses should implement get_webhook_url")
+        pass
 
 
 class NgrokTunnelManager(TunnelManager):
@@ -407,6 +406,43 @@ class TailscaleTunnelManager(TunnelManager):
             raise RuntimeError("Must call get_public_url() first")
         return f"{self._cached_url.rstrip('/')}{path}"
 
+    async def wait_for_ready(
+        self,
+        max_attempts: int = 30,
+        delay: float = 1.0,
+    ) -> str:
+        """
+        Wait for Tailscale Funnel to be ready and return the public URL.
+
+        Polls the Tailscale status until it returns a valid DNS name
+        or until max_attempts is reached.
+
+        Args:
+            max_attempts: Maximum number of polling attempts.
+            delay: Delay between attempts in seconds.
+
+        Returns:
+            The public HTTPS URL for Tailscale Funnel.
+
+        Raises:
+            TunnelNotReadyError: If tunnel is not ready within the timeout.
+        """
+        last_error: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return await self.get_public_url()
+            except (TunnelNotReadyError, TunnelAPIError) as e:
+                last_error = e
+                if attempt < max_attempts:
+                    logger.debug(
+                        f"Waiting for Tailscale to be ready (attempt {attempt}/{max_attempts})"
+                    )
+                    await asyncio.sleep(delay)
+
+        raise TunnelNotReadyError(
+            f"Tailscale tunnel not ready after {max_attempts} attempts"
+        ) from last_error
+
 
 def get_tunnel_manager(
     tunnel_type: TunnelType,
@@ -484,7 +520,7 @@ async def discover_tunnel_url(
             f"Please install {tunnel_type.value} first."
         )
 
-    if wait and isinstance(manager, NgrokTunnelManager):
+    if wait:
         return await manager.wait_for_ready(max_attempts=max_attempts)
     else:
         return await manager.get_public_url()

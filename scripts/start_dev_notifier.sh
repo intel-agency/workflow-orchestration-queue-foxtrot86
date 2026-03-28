@@ -55,6 +55,8 @@ FASTAPI_PORT="${FASTAPI_PORT:-8000}"
 USE_TUNNEL=true
 AUTO_CONFIGURE=false
 NGROK_API_PORT=4040
+LOG_DIR="${PROJECT_ROOT}/logs"
+LOG_FILE="${LOG_DIR}/dev_notifier.log"
 
 # Process tracking
 TUNNEL_PID=""
@@ -94,7 +96,42 @@ log_url() {
 }
 
 show_help() {
-    sed -n '/^# Usage:/,/^#$/p' "$0" | head -n -1 | tail -n +2 | sed 's/^# //'
+    cat << 'EOF'
+Development Launcher Script for Notifier Service with Tunnel Support
+
+Usage:
+  ./scripts/start_dev_notifier.sh [options]
+
+Options:
+  --ngrok          Use ngrok for tunneling (default)
+  --tailscale      Use Tailscale Funnel for tunneling
+  --port PORT      Local port for FastAPI (default: 8000)
+  --no-tunnel      Start only FastAPI without tunnel
+  --auto-configure Attempt to auto-configure GitHub webhook URL
+  --help           Show this help message
+
+Environment Variables:
+  TUNNEL_TYPE      Tunnel type to use (ngrok or tailscale)
+  FASTAPI_PORT     Local port for FastAPI server
+  GITHUB_WEBHOOK_SECRET  Secret for HMAC signature verification
+
+Prerequisites:
+  - ngrok: Install from https://ngrok.com and configure authtoken
+  - Tailscale: Install from https://tailscale.com and run `tailscale up`
+
+Examples:
+  # Start with ngrok (default)
+  ./scripts/start_dev_notifier.sh
+
+  # Start with Tailscale Funnel
+  ./scripts/start_dev_notifier.sh --tailscale
+
+  # Use custom port
+  ./scripts/start_dev_notifier.sh --port 3000
+
+  # Start without tunnel (for local testing only)
+  ./scripts/start_dev_notifier.sh --no-tunnel
+EOF
     exit 0
 }
 
@@ -227,8 +264,12 @@ validate_dependencies() {
 start_ngrok_tunnel() {
     log_step "Starting ngrok tunnel on port $FASTAPI_PORT..."
 
-    # Start ngrok in background
-    ngrok http "$FASTAPI_PORT" --log=stdout > /dev/null 2>&1 &
+    # Ensure log directory exists
+    mkdir -p "$LOG_DIR"
+
+    # Start ngrok in background with logging
+    log_info "Logging ngrok output to: $LOG_FILE"
+    ngrok http "$FASTAPI_PORT" --log=stdout >> "$LOG_FILE" 2>&1 &
     TUNNEL_PID=$!
 
     log_info "ngrok started (PID: $TUNNEL_PID)"
@@ -295,8 +336,12 @@ start_tailscale_tunnel() {
         log_warn "You may need to enable it in the Tailscale admin console."
     fi
 
-    # Start tailscale funnel in background
-    tailscale funnel "$FASTAPI_PORT" > /dev/null 2>&1 &
+    # Ensure log directory exists
+    mkdir -p "$LOG_DIR"
+
+    # Start tailscale funnel in background with logging
+    log_info "Logging Tailscale output to: $LOG_FILE"
+    tailscale funnel "$FASTAPI_PORT" >> "$LOG_FILE" 2>&1 &
     TUNNEL_PID=$!
 
     log_info "Tailscale Funnel started (PID: $TUNNEL_PID)"
@@ -370,12 +415,16 @@ start_fastapi() {
 
     cd "$PROJECT_ROOT"
 
-    # Start uvicorn with uv
+    # Ensure log directory exists
+    mkdir -p "$LOG_DIR"
+
+    # Start uvicorn with uv - log output for debugging
+    log_info "Logging FastAPI output to: $LOG_FILE"
     uv run uvicorn src.notifier_service:app \
         --host 0.0.0.0 \
         --port "$FASTAPI_PORT" \
         --reload \
-        > /dev/null 2>&1 &
+        >> "$LOG_FILE" 2>&1 &
 
     FASTAPI_PID=$!
     log_info "FastAPI started (PID: $FASTAPI_PID)"
@@ -412,6 +461,10 @@ main() {
     echo "  Phase 2 - Local-to-Cloud Tunneling"
     echo "=============================================="
     echo ""
+
+    # Create log directory
+    mkdir -p "$LOG_DIR"
+    log_info "Logs will be written to: $LOG_FILE"
 
     validate_dependencies
 

@@ -27,13 +27,13 @@ The Local-to-Cloud Tunneling feature enables developers to:
 │                                        ▲                     │
 └────────────────────────────────────────│─────────────────────┘
                                          │
-                              ┌──────────┴──────────┐
-                              │   Tunnel Service    │
-                              │   (ngrok/Tailscale) │
-                              │                     │
-                              │  Public URL:        │
-                              │  https://xxx.ngrok.io
-                              └──────────┬──────────┘
+                               ┌──────────┴──────────┐
+                               │   Tunnel Service    │
+                               │   (ngrok/Tailscale) │
+                               │                     │
+                               │  Public URL:        │
+                               │  https://xxx.ngrok.io  (xxx = dynamically generated)
+                               └──────────┬──────────┘
                                          │
                                          ▼
 ┌─────────────────────────────────────────────────────────────┐
