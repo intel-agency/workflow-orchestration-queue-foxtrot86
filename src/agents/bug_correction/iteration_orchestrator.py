@@ -10,7 +10,7 @@ Story 4 of Epic 3.2: Iteration Loop Orchestration
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
@@ -159,7 +159,7 @@ class IterationLoopOrchestrator:
             ... )
             >>> print(f"Started iteration {status.current_iteration}")
         """
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # Get or create status
         status = self.statuses.get(issue_number)
@@ -238,7 +238,7 @@ class IterationLoopOrchestrator:
         if status is None:
             raise ValueError(f"Issue #{issue_number} is not being tracked")
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         status.last_updated = now
 
         # Update the current iteration record
@@ -357,7 +357,6 @@ class IterationLoopOrchestrator:
             in (
                 IterationState.IDLE,
                 IterationState.PENDING_REVIEW,
-                IterationState.IN_PROGRESS,
             )
             and status.current_iteration < status.max_iterations
         )

@@ -8,6 +8,7 @@ Story 3 of Epic 3.2: Feedback Context Injection
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -116,6 +117,13 @@ class FeedbackContextInjector:
         ... )
         >>> prompt = injector.build_prompt_context(context)
     """
+
+    # Named constants for thresholds
+    MIN_ACTION_ITEM_LENGTH = 10
+    """Minimum character length for a line to be considered an action item."""
+
+    MAX_SUMMARY_LENGTH = 200
+    """Maximum character length for generated summaries."""
 
     # Keywords that indicate blocking or critical issues
     BLOCKING_KEYWORDS = [
@@ -441,8 +449,11 @@ class FeedbackContextInjector:
         """
         body_lower = body.lower()
 
-        # Check for blocking keywords
-        if any(keyword in body_lower for keyword in self.BLOCKING_KEYWORDS):
+        # Check for blocking keywords using word boundaries to prevent false positives
+        if any(
+            re.search(r"\b" + re.escape(keyword) + r"\b", body_lower)
+            for keyword in self.BLOCKING_KEYWORDS
+        ):
             return CommentPriority.CRITICAL
 
         # Check for changes requested state
@@ -474,7 +485,10 @@ class FeedbackContextInjector:
             return True
 
         body_lower = body.lower()
-        return any(keyword in body_lower for keyword in self.BLOCKING_KEYWORDS)
+        return any(
+            re.search(r"\b" + re.escape(keyword) + r"\b", body_lower)
+            for keyword in self.BLOCKING_KEYWORDS
+        )
 
     def _extract_action_items(self, body: str | None) -> list[str]:
         """
@@ -526,7 +540,7 @@ class FeedbackContextInjector:
                 "delete",
             ]
             first_word = line.split()[0].lower() if line.split() else ""
-            if first_word in action_verbs and len(line) > 10:
+            if first_word in action_verbs and len(line) > self.MIN_ACTION_ITEM_LENGTH:
                 action_items.append(line)
 
         return action_items[:10]  # Limit to 10 items
@@ -553,8 +567,8 @@ class FeedbackContextInjector:
 
         # Generate a brief summary from the first line or sentence
         first_sentence = body.split(".")[0]
-        if len(first_sentence) > 200:
-            return first_sentence[:200] + "..."
+        if len(first_sentence) > self.MAX_SUMMARY_LENGTH:
+            return first_sentence[: self.MAX_SUMMARY_LENGTH] + "..."
         return first_sentence
 
     def _sort_comments_by_priority(

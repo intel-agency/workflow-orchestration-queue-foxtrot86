@@ -229,6 +229,12 @@ class StatusTransitionHandler:
 
         Returns:
             The current status label name, or None if not set.
+
+        Note:
+            This method makes a synchronous GitHub API call within an async
+            function. For production use, consider replacing the GitHub client
+            with an async alternative (e.g., using aiohttp or githubkit).
+            See: https://github.com/nam20485/sentinel-orchestrator/issues/XXX
         """
         if self.github_client is None:
             logger.warning("No GitHub client configured, cannot get current status")
@@ -293,6 +299,12 @@ class StatusTransitionHandler:
 
         Returns:
             StatusTransitionResult indicating success or failure.
+
+        Note:
+            This method makes synchronous GitHub API calls within an async
+            function. For production use, consider replacing the GitHub client
+            with an async alternative (e.g., using aiohttp or githubkit).
+            See: https://github.com/nam20485/sentinel-orchestrator/issues/XXX
         """
         if self.github_client is None:
             return StatusTransitionResult(

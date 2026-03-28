@@ -27,6 +27,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import sys
 import uuid
 from contextlib import asynccontextmanager
@@ -893,8 +894,6 @@ def _extract_linked_issue_number(pr_body: str | None, pr_title: str) -> int | No
     Returns:
         The first linked issue number found, or None.
     """
-    import re
-
     text = f"{pr_title}\n{pr_body or ''}"
 
     # Pattern for "Fixes #123", "Closes #456", etc.
