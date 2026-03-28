@@ -229,7 +229,7 @@ class ShellBridge:
             extra={"work_item_id": work_item_id},
         )
 
-        start_time = asyncio.get_running_loop().time()
+
         log_capture = LogCapture(
             log_dir=log_dir,
             issue_id=work_item_id,
@@ -264,7 +264,7 @@ class ShellBridge:
                 # Kill the process on timeout
                 process.kill()
                 await process.wait()
-                duration = asyncio.get_running_loop().time() - start_time
+
 
                 logger.error(
                     "Prompt execution timed out",
@@ -285,7 +285,7 @@ class ShellBridge:
                 )
 
             exit_code = process.returncode or 0
-            duration = asyncio.get_running_loop().time() - start_time
+
             success = exit_code == 0
 
             logger.info(
@@ -311,7 +311,7 @@ class ShellBridge:
             )
 
         except Exception as e:
-            duration = asyncio.get_running_loop().time() - start_time
+
             logger.exception(
                 "Prompt execution failed with exception",
                 extra={"work_item_id": work_item_id, "error": str(e)},
@@ -350,7 +350,7 @@ class ShellBridge:
                 if not line:
                     break
 
-                decoded_line = line.decode(errors="replace").rstrip("\n")
+
                 if decoded_line:
                     log_capture.write_entry(decoded_line, stream=stream_type)
                     logger.debug(
