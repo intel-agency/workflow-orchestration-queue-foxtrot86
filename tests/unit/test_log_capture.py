@@ -174,3 +174,156 @@ class TestLogCaptureJsonlFormat:
 
         assert len(lines) == 1
         assert lines[0].endswith("\n")
+
+
+class TestLogCaptureGetEntriesByStream:
+    """Tests for get_entries_by_stream method."""
+
+    def test_filter_stdout(self, tmp_path: Path) -> None:
+        """Filter entries by stdout stream."""
+        capture = LogCapture(log_dir=tmp_path, issue_id="123")
+
+        capture.write_entry("stdout line 1", stream="stdout")
+        capture.write_entry("stderr line 1", stream="stderr")
+        capture.write_entry("stdout line 2", stream="stdout")
+
+        stdout_entries = capture.get_entries_by_stream("stdout")
+        assert len(stdout_entries) == 2
+        assert all(e["stream"] == "stdout" for e in stdout_entries)
+
+    def test_filter_stderr(self, tmp_path: Path) -> None:
+        """Filter entries by stderr stream."""
+        capture = LogCapture(log_dir=tmp_path, issue_id="456")
+
+        capture.write_entry("stdout line", stream="stdout")
+        capture.write_entry("stderr line 1", stream="stderr")
+        capture.write_entry("stderr line 2", stream="stderr")
+
+        stderr_entries = capture.get_entries_by_stream("stderr")
+        assert len(stderr_entries) == 2
+        assert all(e["stream"] == "stderr" for e in stderr_entries)
+
+    def test_empty_result_for_nonexistent_stream(self, tmp_path: Path) -> None:
+        """Returns empty list for nonexistent stream."""
+        capture = LogCapture(log_dir=tmp_path, issue_id="123")
+        capture.write_entry("test", stream="stdout")
+
+        result = capture.get_entries_by_stream("nonexistent")
+        assert result == []
+
+
+class TestLogCaptureGetLastEntry:
+    """Tests for get_last_entry method."""
+
+    def test_returns_last_entry(self, tmp_path: Path) -> None:
+        """Returns the last entry."""
+        capture = LogCapture(log_dir=tmp_path, issue_id="123")
+
+        capture.write_entry("first", stream="stdout")
+        capture.write_entry("second", stream="stdout")
+        capture.write_entry("third", stream="stdout")
+
+        last = capture.get_last_entry()
+        assert last is not None
+        assert last["content"] == "third"
+
+    def test_returns_none_for_empty_log(self, tmp_path: Path) -> None:
+        """Returns None for empty log."""
+        capture = LogCapture(log_dir=tmp_path, issue_id="123")
+        assert capture.get_last_entry() is None
+
+
+class TestLogCaptureGetErrorContext:
+    """Tests for get_error_context method."""
+
+    def test_returns_error_context(self, tmp_path: Path) -> None:
+        """Returns error context with all fields."""
+        capture = LogCapture(log_dir=tmp_path, issue_id="test-issue")
+
+        capture.write_entry("stdout line", stream="stdout")
+        capture.write_entry("stderr error", stream="stderr")
+
+        context = capture.get_error_context()
+
+        assert "log_file" in context
+        assert context["issue_id"] == "test-issue"
+        assert context["run_id"] == capture.run_id
+        assert context["stderr_lines"] == ["stderr error"]
+        assert context["stdout_lines"] == ["stdout line"]
+        assert context["total_entries"] == 2
+
+    def test_empty_error_context(self, tmp_path: Path) -> None:
+        """Returns empty context for empty log."""
+        capture = LogCapture(log_dir=tmp_path, issue_id="123")
+
+        context = capture.get_error_context()
+
+        assert context["stderr_lines"] == []
+        assert context["stdout_lines"] == []
+        assert context["total_entries"] == 0
+
+
+class TestLogCaptureGetContentSummary:
+    """Tests for get_content_summary method."""
+
+    def test_returns_summary(self, tmp_path: Path) -> None:
+        """Returns content summary."""
+        capture = LogCapture(log_dir=tmp_path, issue_id="123")
+
+        capture.write_entry("line 1", stream="stdout")
+        capture.write_entry("error", stream="stderr")
+
+        summary = capture.get_content_summary()
+
+        assert "line 1" in summary
+        assert "error" in summary
+        assert "[stdout]" in summary
+        assert "[stderr]" in summary
+
+    def test_limits_max_lines(self, tmp_path: Path) -> None:
+        """Limits summary to max_lines."""
+        capture = LogCapture(log_dir=tmp_path, issue_id="123")
+
+        # Write 100 lines
+        for i in range(100):
+            capture.write_entry(f"line {i}", stream="stdout")
+
+        summary = capture.get_content_summary(max_lines=10)
+
+        # Should have 10 lines plus the "omitted" message
+        assert "earlier entries omitted" in summary
+        assert "line 90" in summary  # Last 10 entries (90-99)
+
+    def test_empty_summary(self, tmp_path: Path) -> None:
+        """Returns message for empty log."""
+        capture = LogCapture(log_dir=tmp_path, issue_id="123")
+
+        summary = capture.get_content_summary()
+
+        assert "No log entries" in summary
+
+
+class TestLogCaptureDurability:
+    """Tests for log durability (Story 3)."""
+
+    def test_flush_on_write(self, tmp_path: Path) -> None:
+        """Each write is flushed to disk."""
+        capture = LogCapture(log_dir=tmp_path, issue_id="123")
+
+        capture.write_entry("test content", stream="stdout")
+
+        # Read the file immediately - should have the content
+        assert capture.log_file.exists()
+        with open(capture.log_file) as f:
+            content = f.read()
+        assert "test content" in content
+
+    def test_multiple_writes_are_durable(self, tmp_path: Path) -> None:
+        """Multiple writes are all persisted."""
+        capture = LogCapture(log_dir=tmp_path, issue_id="123")
+
+        for i in range(10):
+            capture.write_entry(f"line {i}", stream="stdout")
+
+        entries = capture.read_entries()
+        assert len(entries) == 10
