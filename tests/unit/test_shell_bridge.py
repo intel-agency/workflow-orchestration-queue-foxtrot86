@@ -385,3 +385,256 @@ class TestExecutionResult:
         assert result.log_file == Path("logs/worker_run_123.jsonl")
         assert result.error_category == ExitCodeCategory.INFRA_FAILURE
         assert result.error_context == {"reason": "timeout"}
+
+
+class TestExecutePrompt:
+    """Tests for execute_prompt method (Story 2)."""
+
+    @pytest.mark.asyncio
+    async def test_successful_execution(self, tmp_path: Path) -> None:
+        """Successful prompt execution returns correct result."""
+        bridge = ShellBridge()
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock()
+        mock_process.kill = MagicMock()
+        mock_process.stdout = AsyncMock()
+        mock_process.stderr = AsyncMock()
+
+        # Mock readline to return empty immediately (end of stream)
+        mock_process.stdout.readline = AsyncMock(return_value=b"")
+        mock_process.stderr.readline = AsyncMock(return_value=b"")
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            result = await bridge.execute_prompt(
+                work_item_id="123",
+                prompt_content="Test prompt",
+                log_dir=tmp_path,
+            )
+
+        assert result.success is True
+        assert result.exit_code == 0
+        assert result.log_file is not None
+        assert result.duration_seconds >= 0
+
+    @pytest.mark.asyncio
+    async def test_failed_execution(self, tmp_path: Path) -> None:
+        """Failed prompt execution returns correct result."""
+        bridge = ShellBridge()
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 1
+        mock_process.wait = AsyncMock()
+        mock_process.kill = MagicMock()
+        mock_process.stdout = AsyncMock()
+        mock_process.stderr = AsyncMock()
+
+        mock_process.stdout.readline = AsyncMock(return_value=b"")
+        mock_process.stderr.readline = AsyncMock(return_value=b"")
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            result = await bridge.execute_prompt(
+                work_item_id="456",
+                prompt_content="Test prompt",
+                log_dir=tmp_path,
+            )
+
+        assert result.success is False
+        assert result.exit_code == 1
+        assert result.error_category == ExitCodeCategory.IMPL_ERROR
+
+    @pytest.mark.asyncio
+    async def test_timeout_handling(self, tmp_path: Path) -> None:
+        """Timeout kills the process and returns error."""
+        bridge = ShellBridge(subprocess_timeout=0.1)
+
+        mock_process = AsyncMock()
+        mock_process.returncode = None
+        mock_process.wait = AsyncMock()
+        mock_process.kill = MagicMock()
+        mock_process.stdout = AsyncMock()
+        mock_process.stderr = AsyncMock()
+
+        # Mock readline to block forever
+        async def slow_readline() -> bytes:
+            await asyncio.sleep(10)
+            return b""
+
+        mock_process.stdout.readline = slow_readline
+        mock_process.stderr.readline = slow_readline
+
+        # Mock wait to also block
+        async def slow_wait() -> None:
+            await asyncio.sleep(10)
+
+        mock_process.wait = slow_wait
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            result = await bridge.execute_prompt(
+                work_item_id="789",
+                prompt_content="Test prompt",
+                log_dir=tmp_path,
+            )
+
+        assert result.success is False
+        assert result.exit_code == -1
+        assert "timed out" in result.message.lower()
+        assert result.error_category == ExitCodeCategory.INFRA_FAILURE
+        mock_process.kill.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_output_streaming(self, tmp_path: Path) -> None:
+        """Output is streamed to log file."""
+        bridge = ShellBridge()
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock()
+        mock_process.kill = MagicMock()
+        mock_process.stdout = AsyncMock()
+        mock_process.stderr = AsyncMock()
+
+        # Mock readline to return lines then empty
+        call_count = 0
+
+        async def mock_stdout_readline() -> bytes:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return b"Line 1\n"
+            elif call_count == 2:
+                return b"Line 2\n"
+            return b""
+
+        mock_process.stdout.readline = mock_stdout_readline
+        mock_process.stderr.readline = AsyncMock(return_value=b"")
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            result = await bridge.execute_prompt(
+                work_item_id="test-streaming",
+                prompt_content="Test prompt",
+                log_dir=tmp_path,
+            )
+
+        assert result.success is True
+        assert result.log_file is not None
+        assert result.log_file.exists()
+
+        # Verify log file has entries
+        import json
+
+        with open(result.log_file) as f:
+            entries = [json.loads(line) for line in f if line.strip()]
+
+        assert len(entries) == 2
+        assert entries[0]["content"] == "Line 1"
+        assert entries[1]["content"] == "Line 2"
+        assert all(e["stream"] == "stdout" for e in entries)
+
+    @pytest.mark.asyncio
+    async def test_stderr_streaming(self, tmp_path: Path) -> None:
+        """Stderr is streamed to log file."""
+        bridge = ShellBridge()
+
+        mock_process = AsyncMock()
+        mock_process.returncode = 0
+        mock_process.wait = AsyncMock()
+        mock_process.kill = MagicMock()
+        mock_process.stdout = AsyncMock()
+        mock_process.stderr = AsyncMock()
+
+        call_count = 0
+
+        async def mock_stderr_readline() -> bytes:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return b"Error message\n"
+            return b""
+
+        mock_process.stdout.readline = AsyncMock(return_value=b"")
+        mock_process.stderr.readline = mock_stderr_readline
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            return_value=mock_process,
+        ):
+            result = await bridge.execute_prompt(
+                work_item_id="test-stderr",
+                prompt_content="Test prompt",
+                log_dir=tmp_path,
+            )
+
+        assert result.success is True
+        assert result.log_file is not None
+
+        import json
+
+        with open(result.log_file) as f:
+            entries = [json.loads(line) for line in f if line.strip()]
+
+        assert len(entries) == 1
+        assert entries[0]["content"] == "Error message"
+        assert entries[0]["stream"] == "stderr"
+
+
+class TestStreamOutput:
+    """Tests for _stream_output method."""
+
+    @pytest.mark.asyncio
+    async def test_streams_lines_to_log_capture(self, tmp_path: Path) -> None:
+        """Lines are streamed to log capture."""
+        from src.sentinel.log_capture import LogCapture
+
+        bridge = ShellBridge()
+        log_capture = LogCapture(log_dir=tmp_path, issue_id="test")
+
+        # Create a mock stream reader
+        mock_stream = AsyncMock()
+        lines = [b"Line 1\n", b"Line 2\n", b""]
+
+        call_count = 0
+
+        async def mock_readline() -> bytes:
+            nonlocal call_count
+            if call_count < len(lines):
+                line = lines[call_count]
+                call_count += 1
+                return line
+            return b""
+
+        mock_stream.readline = mock_readline
+
+        await bridge._stream_output(mock_stream, log_capture, "stdout")
+
+        entries = log_capture.read_entries()
+        assert len(entries) == 2
+        assert entries[0]["content"] == "Line 1"
+        assert entries[1]["content"] == "Line 2"
+
+    @pytest.mark.asyncio
+    async def test_handles_none_stream(self, tmp_path: Path) -> None:
+        """Handles None stream gracefully."""
+        from src.sentinel.log_capture import LogCapture
+
+        bridge = ShellBridge()
+        log_capture = LogCapture(log_dir=tmp_path, issue_id="test")
+
+        # Should not raise
+        await bridge._stream_output(None, log_capture, "stdout")
+
+        entries = log_capture.read_entries()
+        assert len(entries) == 0

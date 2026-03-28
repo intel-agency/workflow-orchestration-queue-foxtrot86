@@ -13,6 +13,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+from .log_capture import LogCapture
+
 logger = logging.getLogger(__name__)
 
 
@@ -188,6 +190,172 @@ class ShellBridge:
             duration_seconds=duration,
             retries=total_retries,
         )
+
+    async def execute_prompt(
+        self,
+        work_item_id: str | int,
+        prompt_content: str,
+        log_dir: str | Path = "logs",
+    ) -> ExecutionResult:
+        """
+        Execute a prompt via devcontainer-opencode.sh.
+
+        This method runs the prompt command with the given work item context,
+        streaming stdout/stderr to a JSONL log file for observability.
+
+        Args:
+            work_item_id: The ID of the work item being processed.
+            prompt_content: The prompt content to execute.
+            log_dir: Directory to store log files.
+
+        Returns:
+            ExecutionResult with the execution outcome, including log file path.
+
+        Example:
+            >>> bridge = ShellBridge()
+            >>> result = await bridge.execute_prompt("123", "Implement feature X")
+            >>> if result.success:
+            ...     print(f"Completed in {result.duration_seconds}s")
+        """
+        logger.info(
+            "Executing prompt",
+            extra={"work_item_id": work_item_id},
+        )
+
+        start_time = asyncio.get_event_loop().time()
+        log_capture = LogCapture(
+            log_dir=log_dir,
+            issue_id=work_item_id,
+        )
+
+        try:
+            # Build the prompt command
+            # The devcontainer-opencode.sh script expects: prompt -f <file> or prompt -c <content>
+            process = await asyncio.create_subprocess_exec(
+                str(self.script_path),
+                "prompt",
+                "-c",
+                prompt_content,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            # Stream output in real-time with timeout
+            stdout_task = asyncio.create_task(
+                self._stream_output(process.stdout, log_capture, "stdout")
+            )
+            stderr_task = asyncio.create_task(
+                self._stream_output(process.stderr, log_capture, "stderr")
+            )
+
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(stdout_task, stderr_task, process.wait()),
+                    timeout=self.subprocess_timeout,
+                )
+            except asyncio.TimeoutError:
+                # Kill the process on timeout
+                process.kill()
+                await process.wait()
+                duration = asyncio.get_event_loop().time() - start_time
+
+                logger.error(
+                    "Prompt execution timed out",
+                    extra={
+                        "work_item_id": work_item_id,
+                        "timeout": self.subprocess_timeout,
+                    },
+                )
+
+                return ExecutionResult(
+                    success=False,
+                    exit_code=-1,
+                    message=f"Prompt execution timed out after {self.subprocess_timeout}s",
+                    duration_seconds=duration,
+                    log_file=log_capture.get_log_path(),
+                    error_category=ExitCodeCategory.INFRA_FAILURE,
+                    error_context={"timeout": self.subprocess_timeout},
+                )
+
+            exit_code = process.returncode or 0
+            duration = asyncio.get_event_loop().time() - start_time
+            success = exit_code == 0
+
+            logger.info(
+                "Prompt execution completed",
+                extra={
+                    "work_item_id": work_item_id,
+                    "exit_code": exit_code,
+                    "duration_seconds": duration,
+                    "success": success,
+                },
+            )
+
+            return ExecutionResult(
+                success=success,
+                exit_code=exit_code,
+                message="Prompt execution completed"
+                if success
+                else f"Prompt execution failed with exit code {exit_code}",
+                duration_seconds=duration,
+                log_file=log_capture.get_log_path(),
+                error_category=self._categorize_exit_code(exit_code, is_infra=False),
+                error_context={"exit_code": exit_code},
+            )
+
+        except Exception as e:
+            duration = asyncio.get_event_loop().time() - start_time
+            logger.exception(
+                "Prompt execution failed with exception",
+                extra={"work_item_id": work_item_id, "error": str(e)},
+            )
+
+            return ExecutionResult(
+                success=False,
+                exit_code=-1,
+                message=f"Prompt execution failed: {e}",
+                duration_seconds=duration,
+                log_file=log_capture.get_log_path(),
+                error_category=ExitCodeCategory.INFRA_FAILURE,
+                error_context={"exception": str(e)},
+            )
+
+    async def _stream_output(
+        self,
+        stream: asyncio.StreamReader | None,
+        log_capture: LogCapture,
+        stream_type: str,
+    ) -> None:
+        """
+        Stream output from a subprocess pipe to log capture.
+
+        Args:
+            stream: The stream reader to read from.
+            log_capture: The log capture instance to write to.
+            stream_type: The type of stream (stdout or stderr).
+        """
+        if stream is None:
+            return
+
+        while True:
+            try:
+                line = await stream.readline()
+                if not line:
+                    break
+
+                decoded_line = line.decode().rstrip("\n")
+                if decoded_line:
+                    log_capture.write_entry(decoded_line, stream=stream_type)
+                    logger.debug(
+                        f"[{stream_type}] {decoded_line}",
+                        extra={"stream": stream_type},
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Error reading {stream_type}",
+                    extra={"error": str(e)},
+                )
+                break
 
     async def _run_infra_command(self, command: str) -> ExecutionResult:
         """
