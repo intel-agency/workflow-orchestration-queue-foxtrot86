@@ -6,12 +6,15 @@ Orchestrator, providing real-time visibility into task execution through
 GitHub Issue interactions.
 
 Modules:
+    config: Sentinel configuration and unique instance identification
+    orchestrator: Main Sentinel orchestrator class
     status_feedback: Main manager class for status feedback operations
     label_manager: GitHub Issue label transition management
     heartbeat: Async heartbeat loop for long-running tasks
     locking: Assign-then-verify locking pattern for race condition prevention
 
 Features:
+    - Unique instance identification via SENTINEL_ID (Epic 1.5)
     - Label transition management (queued → in-progress → success/error)
     - Claim comments when Sentinel starts work
     - Heartbeat updates for long-running tasks
@@ -20,6 +23,12 @@ Features:
     - Credential scrubbing for all posted content
 """
 
+from src.sentinel.config import (
+    SENTINEL_ID_ENV_VAR,
+    SentinelConfig,
+    get_or_create_sentinel_id,
+    get_sentinel_id_short,
+)
 from src.sentinel.heartbeat import (
     HeartbeatLoop,
     format_elapsed_time,
@@ -37,6 +46,10 @@ from src.sentinel.locking import (
     LockManager,
     acquire_lock,
 )
+from src.sentinel.orchestrator import (
+    Sentinel,
+    create_sentinel,
+)
 from src.sentinel.status_feedback import (
     ErrorPhase,
     StatusFeedbackManager,
@@ -44,6 +57,14 @@ from src.sentinel.status_feedback import (
 )
 
 __all__ = [
+    # Configuration & ID (Epic 1.5)
+    "SENTINEL_ID_ENV_VAR",
+    "SentinelConfig",
+    "get_or_create_sentinel_id",
+    "get_sentinel_id_short",
+    # Orchestrator (Epic 1.5)
+    "Sentinel",
+    "create_sentinel",
     # Label management
     "AgentLabel",
     "LabelManager",
