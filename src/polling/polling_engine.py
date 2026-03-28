@@ -231,21 +231,7 @@ class PollingEngine:
         This method blocks until stop() is called or a shutdown signal is received.
         """
         logger.info("Starting polling loop for %s", self._repo_slug)
-
-        while self._running:
-            try:
-                await self._poll_once()
-            except Exception as e:
-                logger.exception("Unexpected error during poll: %s", e)
-                if self._on_error:
-                    self._on_error(e)
-
-            if not self._running:
-                break
-
-            # Wait for next poll interval or shutdown
-            await self._wait_for_interval()
-
+        await self.run_until_shutdown()
         logger.info("Polling loop ended")
 
     async def run_until_shutdown(self, max_iterations: int | None = None) -> None:
@@ -292,7 +278,7 @@ class PollingEngine:
             List of work items found during the poll.
         """
         self._poll_complete_event.clear()
-        poll_start_time = asyncio.get_event_loop().time()
+        poll_start_time = asyncio.get_running_loop().time()
 
         try:
             logger.debug("Polling %s for queued items...", self._repo_slug)
@@ -310,7 +296,7 @@ class PollingEngine:
             self._last_poll_time = poll_start_time
 
             # Log results
-            poll_duration = asyncio.get_event_loop().time() - poll_start_time
+            poll_duration = asyncio.get_running_loop().time() - poll_start_time
             logger.info(
                 "Poll #%d complete: found %d item(s) for %s in %.2fs",
                 self._poll_count,
