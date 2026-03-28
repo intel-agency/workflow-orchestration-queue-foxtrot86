@@ -9,6 +9,7 @@ Story 2.2.1: Issue Body Parser Module
 
 import re
 import logging
+import threading
 from enum import Enum
 from dataclasses import dataclass
 from typing import Any
@@ -35,11 +36,6 @@ class ParseResult:
     matched_pattern: str | None = None
     raw_header: str | None = None
 
-    model_config = {
-        "frozen": False,
-        "extra": "forbid",
-    }
-
 
 class IssueBodyParser:
     """
@@ -56,34 +52,38 @@ class IssueBodyParser:
         ```
     """
 
+    # Confidence threshold for high-confidence matches
+    HIGH_CONFIDENCE_THRESHOLD: float = 0.8
+
     # Regex patterns for template detection
     # Patterns are ordered by specificity - more specific patterns first
+    # Using conditional regex to ensure balanced brackets: (?(1)\]) means "if group 1 matched, require ]"
     TEMPLATE_PATTERNS: list[tuple[str, TaskType]] = [
         # Application Plan patterns
-        (r"^\s*#\s*\[?Application Plan\]?", TaskType.PLAN),
-        (r"^\s*#\s*\[?App Plan\]?", TaskType.PLAN),
-        (r"^\s*#\s*\[?Plan\]?", TaskType.PLAN),
+        (r"^\s*#\s*(\[)?Application Plan(?(1)\])", TaskType.PLAN),
+        (r"^\s*#\s*(\[)?App Plan(?(1)\])", TaskType.PLAN),
+        (r"^\s*#\s*(\[)?Plan(?(1)\])", TaskType.PLAN),
         (
             r"^\s*##\s*Overview\s*\n\s*This epic implements",
             TaskType.PLAN,
         ),  # Epic format
         (r"^\s*##\s*Implementation Plan", TaskType.PLAN),
         # Bug report patterns
-        (r"^\s*#\s*\[?Bug\]?", TaskType.BUG),
-        (r"^\s*#\s*\[?Bug Report\]?", TaskType.BUG),
+        (r"^\s*#\s*(\[)?Bug(?(1)\])", TaskType.BUG),
+        (r"^\s*#\s*(\[)?Bug Report(?(1)\])", TaskType.BUG),
         (r"^\s*##\s*Bug Description", TaskType.BUG),
         (r"^\s*##\s*Steps to Reproduce", TaskType.BUG),
         (r"^\s*##\s*Expected [Bb]ehavior", TaskType.BUG),
         (r"^\s*##\s*Actual [Bb]ehavior", TaskType.BUG),
         # Feature request patterns
-        (r"^\s*#\s*\[?Feature\]?", TaskType.FEATURE),
-        (r"^\s*#\s*\[?Feature Request\]?", TaskType.FEATURE),
+        (r"^\s*#\s*(\[)?Feature(?(1)\])", TaskType.FEATURE),
+        (r"^\s*#\s*(\[)?Feature Request(?(1)\])", TaskType.FEATURE),
         (r"^\s*##\s*Feature Description", TaskType.FEATURE),
         (r"^\s*##\s*Proposed [Ff]eature", TaskType.FEATURE),
         (r"^\s*##\s*User [Ss]tory", TaskType.FEATURE),
         (r"^\s*##\s*Acceptance [Cc]riteria", TaskType.FEATURE),
         # Enhancement patterns
-        (r"^\s*#\s*\[?Enhancement\]?", TaskType.ENHANCEMENT),
+        (r"^\s*#\s*(\[)?Enhancement(?(1)\])", TaskType.ENHANCEMENT),
         (r"^\s*#\s*\[?Improve", TaskType.ENHANCEMENT),
         (r"^\s*##\s*Enhancement", TaskType.ENHANCEMENT),
         (r"^\s*##\s*Improvement", TaskType.ENHANCEMENT),
@@ -236,7 +236,7 @@ class IssueBodyParser:
         result = self.parse(body)
 
         # If high confidence match, return it
-        if result.confidence >= 0.8:
+        if result.confidence >= self.HIGH_CONFIDENCE_THRESHOLD:
             return result
 
         # Fallback to label analysis
@@ -273,29 +273,29 @@ class IssueBodyParser:
         """
         label_lower = [label.lower() for label in labels]
 
-        # Check for type-indicating labels
-        if any("bug" in label for label in label_lower):
+        # Check for type-indicating labels (exact match to avoid false positives)
+        if any(label == "bug" for label in label_lower):
             return ParseResult(
                 detected_type=TaskType.BUG,
                 confidence=0.9,
                 matched_pattern="label:bug",
                 raw_header=None,
             )
-        if any("feature" in label for label in label_lower):
+        if any(label == "feature" for label in label_lower):
             return ParseResult(
                 detected_type=TaskType.FEATURE,
                 confidence=0.9,
                 matched_pattern="label:feature",
                 raw_header=None,
             )
-        if any("enhancement" in label for label in label_lower):
+        if any(label == "enhancement" for label in label_lower):
             return ParseResult(
                 detected_type=TaskType.ENHANCEMENT,
                 confidence=0.9,
                 matched_pattern="label:enhancement",
                 raw_header=None,
             )
-        if any("plan" in label or "epic" in label for label in label_lower):
+        if any(label in ("plan", "epic") for label in label_lower):
             return ParseResult(
                 detected_type=TaskType.PLAN,
                 confidence=0.9,
@@ -361,6 +361,7 @@ class IssueBodyParser:
 
 # Module-level convenience function
 _default_parser: IssueBodyParser | None = None
+_parser_lock = threading.Lock()
 
 
 def parse_issue_body(body: str | None) -> ParseResult:
@@ -382,7 +383,10 @@ def parse_issue_body(body: str | None) -> ParseResult:
     """
     global _default_parser
     if _default_parser is None:
-        _default_parser = IssueBodyParser()
+        with _parser_lock:
+            # Double-checked locking pattern
+            if _default_parser is None:
+                _default_parser = IssueBodyParser()
     return _default_parser.parse(body)
 
 
@@ -407,5 +411,8 @@ def parse_issue_with_context(
     """
     global _default_parser
     if _default_parser is None:
-        _default_parser = IssueBodyParser()
+        with _parser_lock:
+            # Double-checked locking pattern
+            if _default_parser is None:
+                _default_parser = IssueBodyParser()
     return _default_parser.parse_with_fallback(body, labels, title)
