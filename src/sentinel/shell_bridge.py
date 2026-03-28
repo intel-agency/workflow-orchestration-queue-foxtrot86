@@ -16,8 +16,10 @@ from typing import Any
 
 from .log_capture import LogCapture
 
-
-logger = logging.getLogger(__name__)
+    from src.models.work_item import WorkItemStatus
+except ImportError:
+    # Fallback for when models are not available
+    WorkItemStatus = None  # type: ignore
 
 
 # Configuration constants that can be overridden via environment variables
@@ -468,5 +470,141 @@ class ShellBridge:
             return ExitCodeCategory.IMPL_ERROR
 
         return ExitCodeCategory.UNKNOWN
+
+    def map_exit_code_to_status(self, exit_code: int, is_infra: bool = False) -> str:
+        """
+        Map an exit code to a WorkItem status string.
+
+        This method provides a convenient way to determine the appropriate
+        status for a work item based on the exit code of the shell command.
+
+        Args:
+            exit_code: The exit code to map.
+            is_infra: Whether this is an infrastructure command.
+
+        Returns:
+            A string representing the work item status.
+
+        Example:
+            >>> bridge = ShellBridge()
+            >>> status = bridge.map_exit_code_to_status(1, is_infra=True)
+            >>> assert status == "infra-failure"
+        """
+        category = self._categorize_exit_code(exit_code, is_infra)
+
+        # Map ExitCodeCategory to WorkItemStatus-like strings
+        status_map = {
+            ExitCodeCategory.SUCCESS: "success",
+            ExitCodeCategory.INFRA_FAILURE: "infra-failure",
+            ExitCodeCategory.IMPL_ERROR: "error",
+            ExitCodeCategory.UNKNOWN: "error",
+        }
+
+        return status_map.get(category, "error")
+
+    def get_error_context_for_comment(
+        self,
+        result: ExecutionResult,
+        log_capture: LogCapture | None = None,
+    ) -> dict[str, Any]:
+        """
+        Generate error context suitable for posting as a comment.
+
+        This method extracts relevant information from an execution result
+        and optional log capture to create a context dictionary that can
+        be used for downstream error handling, such as posting comments.
+
+        Args:
+            result: The ExecutionResult from a prompt execution.
+            log_capture: Optional LogCapture instance for log context.
+
+        Returns:
+            Dictionary with error context for comment posting.
+
+        Example:
+            >>> bridge = ShellBridge()
+            >>> result = await bridge.execute_prompt("123", "test")
+            >>> if not result.success:
+            ...     context = bridge.get_error_context_for_comment(result)
+        """
+        context: dict[str, Any] = {
+            "success": result.success,
+            "exit_code": result.exit_code,
+            "error_category": result.error_category.value,
+            "message": result.message,
+            "duration_seconds": result.duration_seconds,
+            "status": self.map_exit_code_to_status(
+                result.exit_code,
+                is_infra=result.error_category == ExitCodeCategory.INFRA_FAILURE,
+            ),
+        }
+
+        if result.log_file:
+            context["log_file"] = str(result.log_file)
+
+        # Add log capture context if available
+        if log_capture:
+            log_context = log_capture.get_error_context()
+            context["stderr_lines"] = log_context.get("stderr_lines", [])
+            context["stdout_lines"] = log_context.get("stdout_lines", [])
+            context["total_log_entries"] = log_context.get("total_entries", 0)
+
+        # Merge any existing error context from result
+        if result.error_context:
+            context.update(result.error_context)
+
+        return context
+
+    def format_error_comment(
+        self,
+        result: ExecutionResult,
+        log_capture: LogCapture | None = None,
+        max_lines: int = 20,
+    ) -> str:
+        """
+        Format an error comment for posting.
+
+        This method creates a human-readable error message suitable for
+        posting as a comment on an issue or PR.
+
+        Args:
+            result: The ExecutionResult from a prompt execution.
+            log_capture: Optional LogCapture instance for log context.
+            max_lines: Maximum number of log lines to include.
+
+        Returns:
+            Formatted error comment string.
+
+        Example:
+            >>> bridge = ShellBridge()
+            >>> result = await bridge.execute_prompt("123", "test")
+            >>> if not result.success:
+            ...     comment = bridge.format_error_comment(result)
+        """
+        if result.success:
+            return "✅ Execution completed successfully."
+
+        lines = [
+            "## ⚠️ Execution Failed",
+            "",
+            f"**Error Category:** {result.error_category.value}",
+            f"**Exit Code:** {result.exit_code}",
+            f"**Duration:** {result.duration_seconds:.2f}s",
+            f"**Message:** {result.message}",
+        ]
+
+        if result.log_file:
+            lines.append(f"**Log File:** `{result.log_file}`")
+
+        # Add log summary if available
+        if log_capture:
+            lines.append("")
+            lines.append("### Log Output Summary")
+            lines.append("```")
+            summary = log_capture.get_content_summary(max_lines=max_lines)
+            lines.append(summary)
+            lines.append("```")
+
+        return "\n".join(lines)
 
 
