@@ -9,11 +9,10 @@ Story 2.2.2: Template-to-Label Mapping Service
 
 import json
 import logging
-import os
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
 
 from src.models import TaskType
@@ -363,14 +362,18 @@ class TriageService:
         """
         self._parser = parser
         self._mapper = mapper or TemplateLabelMapper()
+        self._parser_lock = threading.Lock()
 
     @property
     def parser(self):
-        """Get or create the parser instance."""
+        """Get or create the parser instance (thread-safe)."""
         if self._parser is None:
-            from src.notifier.parsers.issue_parser import IssueBodyParser
+            with self._parser_lock:
+                # Double-checked locking pattern
+                if self._parser is None:
+                    from src.notifier.parsers.issue_parser import IssueBodyParser
 
-            self._parser = IssueBodyParser()
+                    self._parser = IssueBodyParser()
         return self._parser
 
     @property
@@ -429,21 +432,29 @@ class TriageService:
 # Module-level convenience instances
 _default_mapper: TemplateLabelMapper | None = None
 _default_service: TriageService | None = None
+_mapper_lock = threading.Lock()
+_service_lock = threading.Lock()
 
 
 def get_default_mapper() -> TemplateLabelMapper:
-    """Get or create the default label mapper instance."""
+    """Get or create the default label mapper instance (thread-safe)."""
     global _default_mapper
     if _default_mapper is None:
-        _default_mapper = TemplateLabelMapper()
+        with _mapper_lock:
+            # Double-checked locking pattern
+            if _default_mapper is None:
+                _default_mapper = TemplateLabelMapper()
     return _default_mapper
 
 
 def get_default_service() -> TriageService:
-    """Get or create the default triage service instance."""
+    """Get or create the default triage service instance (thread-safe)."""
     global _default_service
     if _default_service is None:
-        _default_service = TriageService()
+        with _service_lock:
+            # Double-checked locking pattern
+            if _default_service is None:
+                _default_service = TriageService()
     return _default_service
 
 
