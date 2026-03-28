@@ -11,11 +11,18 @@ import os
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+import random
 from typing import Any
 
 from .log_capture import LogCapture
 
+
 logger = logging.getLogger(__name__)
+
+
+# Configuration constants that can be overridden via environment variables
+INFRA_TIMEOUT = float(os.environ.get("INFRA_TIMEOUT", 60.0))
+SUBPROCESS_TIMEOUT = float(os.environ.get("SUBPROCESS_TIMEOUT", 5700.0))
 
 
 class ExitCodeCategory(str, Enum):
@@ -74,8 +81,8 @@ class ShellBridge:
     def __init__(
         self,
         script_path: str | Path = "./scripts/devcontainer-opencode.sh",
-        infra_timeout: float = DEFAULT_INFRA_TIMEOUT,
-        subprocess_timeout: float = DEFAULT_SUBPROCESS_TIMEOUT,
+        infra_timeout: float = INFRA_TIMEOUT,
+        subprocess_timeout: float = SUBPROCESS_TIMEOUT,
         max_retries: int = DEFAULT_MAX_RETRIES,
         retry_base_delay: float = DEFAULT_RETRY_BASE_DELAY,
     ) -> None:
@@ -113,13 +120,13 @@ class ShellBridge:
         """
         logger.info("Checking environment readiness via 'up' command")
         total_retries = 0
-        start_time = asyncio.get_event_loop().time()
+        start_time = asyncio.get_running_loop().time()
 
         for attempt in range(self.max_retries + 1):
             try:
                 result = await self._run_infra_command("up")
                 if result.success:
-                    duration = asyncio.get_event_loop().time() - start_time
+                    duration = asyncio.get_running_loop().time() - start_time
                     logger.info(
                         "Environment ready",
                         extra={
@@ -151,7 +158,7 @@ class ShellBridge:
                         continue
 
                 # Non-transient failure or max retries reached
-                duration = asyncio.get_event_loop().time() - start_time
+                duration = asyncio.get_running_loop().time() - start_time
                 return EnvironmentResult(
                     success=False,
                     message=f"Environment check failed: {result.message}",
@@ -174,7 +181,7 @@ class ShellBridge:
                     await asyncio.sleep(delay)
                     continue
 
-                duration = asyncio.get_event_loop().time() - start_time
+                duration = asyncio.get_running_loop().time() - start_time
                 return EnvironmentResult(
                     success=False,
                     message=f"Environment check timed out after {self.infra_timeout}s",
@@ -183,7 +190,7 @@ class ShellBridge:
                 )
 
         # Should not reach here, but just in case
-        duration = asyncio.get_event_loop().time() - start_time
+        duration = asyncio.get_running_loop().time() - start_time
         return EnvironmentResult(
             success=False,
             message="Environment check failed after max retries",
@@ -222,7 +229,7 @@ class ShellBridge:
             extra={"work_item_id": work_item_id},
         )
 
-        start_time = asyncio.get_event_loop().time()
+        start_time = asyncio.get_running_loop().time()
         log_capture = LogCapture(
             log_dir=log_dir,
             issue_id=work_item_id,
@@ -257,7 +264,7 @@ class ShellBridge:
                 # Kill the process on timeout
                 process.kill()
                 await process.wait()
-                duration = asyncio.get_event_loop().time() - start_time
+                duration = asyncio.get_running_loop().time() - start_time
 
                 logger.error(
                     "Prompt execution timed out",
@@ -278,7 +285,7 @@ class ShellBridge:
                 )
 
             exit_code = process.returncode or 0
-            duration = asyncio.get_event_loop().time() - start_time
+            duration = asyncio.get_running_loop().time() - start_time
             success = exit_code == 0
 
             logger.info(
@@ -304,7 +311,7 @@ class ShellBridge:
             )
 
         except Exception as e:
-            duration = asyncio.get_event_loop().time() - start_time
+            duration = asyncio.get_running_loop().time() - start_time
             logger.exception(
                 "Prompt execution failed with exception",
                 extra={"work_item_id": work_item_id, "error": str(e)},
@@ -343,7 +350,7 @@ class ShellBridge:
                 if not line:
                     break
 
-                decoded_line = line.decode().rstrip("\n")
+                decoded_line = line.decode(errors="replace").rstrip("\n")
                 if decoded_line:
                     log_capture.write_entry(decoded_line, stream=stream_type)
                     logger.debug(
@@ -386,7 +393,7 @@ class ShellBridge:
             return ExecutionResult(
                 success=success,
                 exit_code=exit_code,
-                message=stderr.decode().strip() if stderr else stdout.decode().strip(),
+                message=stderr.decode(errors="replace").strip() if stderr else stdout.decode(errors="replace").strip(),
                 error_category=self._categorize_exit_code(exit_code, is_infra=True),
             )
 
@@ -431,7 +438,6 @@ class ShellBridge:
             Delay in seconds before the next retry.
         """
         # Exponential backoff with jitter: base * 2^attempt + random jitter
-        import random
 
         base_delay = self.retry_base_delay * (2**attempt)
         jitter = random.uniform(0, 1)  # noqa: S311
@@ -464,10 +470,3 @@ class ShellBridge:
         return ExitCodeCategory.UNKNOWN
 
 
-# Configuration constants that can be overridden via environment variables
-INFRA_TIMEOUT = float(
-    os.environ.get("INFRA_TIMEOUT", ShellBridge.DEFAULT_INFRA_TIMEOUT)
-)
-SUBPROCESS_TIMEOUT = float(
-    os.environ.get("SUBPROCESS_TIMEOUT", ShellBridge.DEFAULT_SUBPROCESS_TIMEOUT)
-)
