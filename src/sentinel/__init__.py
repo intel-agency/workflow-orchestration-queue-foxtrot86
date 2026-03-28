@@ -7,6 +7,7 @@ GitHub Issue interactions.
 
 Modules:
     config: Sentinel configuration and unique instance identification
+    logging_config: Structured logging with sentinel_id (Epic 1.5, Story 2)
     orchestrator: Main Sentinel orchestrator class
     status_feedback: Main manager class for status feedback operations
     label_manager: GitHub Issue label transition management
@@ -15,6 +16,7 @@ Modules:
 
 Features:
     - Unique instance identification via SENTINEL_ID (Epic 1.5)
+    - Structured logging with sentinel_id in all messages (Epic 1.5, Story 2)
     - Label transition management (queued → in-progress → success/error)
     - Claim comments when Sentinel starts work
     - Heartbeat updates for long-running tasks
@@ -41,6 +43,14 @@ from src.sentinel.label_manager import (
     LabelManager,
     get_label_for_status,
 )
+from src.sentinel.logging_config import (
+    SentinelJsonFormatter,
+    SentinelLogContext,
+    SentinelLogFilter,
+    SentinelTextFormatter,
+    configure_sentinel_logging,
+    get_sentinel_logger,
+)
 from src.sentinel.locking import (
     LockAcquisitionError,
     LockManager,
@@ -62,6 +72,13 @@ __all__ = [
     "SentinelConfig",
     "get_or_create_sentinel_id",
     "get_sentinel_id_short",
+    # Logging (Epic 1.5, Story 2)
+    "SentinelLogFilter",
+    "SentinelJsonFormatter",
+    "SentinelTextFormatter",
+    "SentinelLogContext",
+    "configure_sentinel_logging",
+    "get_sentinel_logger",
     # Orchestrator (Epic 1.5)
     "Sentinel",
     "create_sentinel",
