@@ -144,7 +144,7 @@ This is the opencode equivalent of a `--yolo` or `--allow-all` flag (there is no
 
 ### Implementation Plan (Class A)
 
-1. **Apply to template repo** (this repo — `intel-agency/ai-new-workflow-app-template`):
+1. **Apply to template repo** (this repo — `intel-agency/workflow-orchestration-queue-foxtrot86`):
    - Edit `.opencode/agents/code-reviewer.md`: change `bash: ask` → `bash: allow`
    - Edit `.opencode/agents/cloud-infra-expert.md`: same change
    - Edit `.opencode/agents/database-admin.md`: same change
