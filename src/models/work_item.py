@@ -83,6 +83,18 @@ class TaskType(str, Enum):
     IMPLEMENT = "IMPLEMENT"
     """Implement mode - execute the implementation."""
 
+    BUG = "BUG"
+    """Bug report - issue describing a defect or problem."""
+
+    FEATURE = "FEATURE"
+    """Feature request - new functionality or enhancement."""
+
+    ENHANCEMENT = "ENHANCEMENT"
+    """Enhancement - improvement to existing functionality."""
+
+    GENERIC = "GENERIC"
+    """Generic issue - no specific template detected."""
+
 
 class WorkItemStatus(str, Enum):
     """
