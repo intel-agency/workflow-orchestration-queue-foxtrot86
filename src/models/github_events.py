@@ -11,7 +11,7 @@ Reference: https://docs.github.com/en/webhooks/webhook-events-and-payloads
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 
 class GitHubEventType(str, Enum):
@@ -319,7 +319,7 @@ def parse_webhook_payload(
             return GitHubIssueCommentEvent.model_validate(payload)
         elif event_type == GitHubEventType.PING.value:
             return GitHubPingEvent.model_validate(payload)
-    except Exception:
+    except ValidationError:
         # Invalid payload structure
         return None
 

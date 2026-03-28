@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 from typing import Any
@@ -296,23 +297,18 @@ def verify_github_signature(
         logger.warning("Invalid signature header format")
         return False
 
-    try:
-        # Extract hex digest from header
-        expected_signature = signature_header[7:]  # Remove "sha256=" prefix
+    # Extract hex digest from header
+    expected_signature = signature_header[7:]  # Remove "sha256=" prefix
 
-        # Compute HMAC-SHA256 of payload
-        computed_signature = hmac.new(
-            secret.encode("utf-8"),
-            payload,
-            hashlib.sha256,
-        ).hexdigest()
+    # Compute HMAC-SHA256 of payload
+    computed_signature = hmac.new(
+        secret.encode("utf-8"),
+        payload,
+        hashlib.sha256,
+    ).hexdigest()
 
-        # Use constant-time comparison to prevent timing attacks
-        return hmac.compare_digest(computed_signature, expected_signature)
-
-    except Exception as e:
-        logger.error(f"Error verifying signature: {type(e).__name__}")
-        return False
+    # Use constant-time comparison to prevent timing attacks
+    return hmac.compare_digest(computed_signature, expected_signature)
 
 
 async def get_raw_body(request: Request) -> bytes:
@@ -692,12 +688,8 @@ def should_process_event(
             ):
                 return True
 
-    # Check for specific actions that should always be processed
+    # Check for label changes that add orchestration labels
     if isinstance(event, GitHubIssuesEvent):
-        # New issues with specific labels
-        if event.action == IssueAction.OPENED and has_orchestration_label:
-            return True
-        # Label changes that add orchestration labels
         if event.action == IssueAction.LABELED and event.label:
             label_name = event.label.name.lower()
             if any(label_name.startswith(prefix) for prefix in orchestration_prefixes):
@@ -890,8 +882,6 @@ async def add_correlation_id(request: Request, call_next: Any) -> Any:
     Generates or extracts a correlation ID for each request and
     makes it available via context variable for logging.
     """
-    import uuid
-
     # Try to get correlation ID from header, or generate new one
     correlation_id = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())
     correlation_id_var.set(correlation_id)

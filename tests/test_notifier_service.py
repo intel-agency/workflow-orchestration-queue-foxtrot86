@@ -15,12 +15,12 @@ import hashlib
 import hmac
 import json
 import os
+import time
 from typing import Any
 
 import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
-from httpx import ASGITransport, AsyncClient
 
 # Set environment variable before importing the app
 os.environ["GITHUB_WEBHOOK_SECRET"] = "test-secret-for-testing-12345"
@@ -1074,8 +1074,6 @@ class TestResponseTiming:
         webhook_secret: str,
     ) -> None:
         """Test that webhook responds within GitHub's 10-second timeout."""
-        import time
-
         payload = json.dumps(sample_issues_payload).encode("utf-8")
         signature = compute_signature(payload, webhook_secret)
 
